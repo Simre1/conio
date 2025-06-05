@@ -1,0 +1,44 @@
+cabal-version:      3.0
+name:               conio
+version:            0.1.0.0
+-- synopsis:
+-- description:
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             simon
+maintainer:         simre4775@gmail.com
+-- copyright:
+category:           Concurrency
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+-- extra-source-files:
+
+common common
+    ghc-options: -Wall
+    default-language: GHC2021
+    default-extensions:
+        OverloadedStrings
+        GeneralizedNewtypeDeriving
+        DerivingStrategies
+        OverloadedRecordDot
+    build-depends:
+        base ^>=4.20.0.0,
+        containers,
+        transformers,
+        stm,
+        unliftio-core
+
+library
+    import:           common
+    exposed-modules:  ConIO
+    hs-source-dirs:   src
+
+test-suite conio-test
+    import:           common
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    build-depends:
+        tasty,
+        tasty-hunit,
+        conio
