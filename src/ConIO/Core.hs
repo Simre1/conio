@@ -51,7 +51,7 @@ makeConEnv = ConEnv <$> newMVar True <*> newIORef M.empty
 
 -- | 'ConIO' stands for concurrent IO. 'ConIO' works like normal 'IO',
 --  but you can also fork off threads without worry.
--- Threads launched from which 'ConIO' will __never outlive__ the 'ConIO' scope.
+-- Threads launched within  'ConIO' will __never outlive__ the 'ConIO' scope.
 -- Before 'ConIO' ends, it will __wait for all threads to finish__.
 -- Additionally, exceptions between parent and children are propagated per default,
 -- completely shutting down all processes when an exception happens anywhere.
