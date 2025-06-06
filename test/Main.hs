@@ -20,21 +20,21 @@ main =
           runConIO $ do
             t1 <- launch $ pure (4 :: Int)
             t2 <- launch $ pure (4 :: Int)
-            val1 <- waitTask t1
-            val2 <- waitTask t2
+            val1 <- wait t1
+            val2 <- wait t2
             liftIO $ val1 @?= val2,
         testCase "launch many tasks" $ runConIO $ do
           counter <- newCounter
-          tasks <- forM [1 .. 10000] $ \(i :: Int) -> do
+          tasks <- forM [1 .. 10000] $ \(_i :: Int) -> do
             launch $ incrementCounter counter
-          traverse_ waitTask tasks
+          traverse_ wait tasks
           value <- getCounter counter
           liftIO $ value @?= 10000,
         testCase "launch really many tasks" $ runConIO $ do
           counter <- newCounter
-          tasks <- forM [1 .. 100000] $ \(i :: Int) -> do
+          tasks <- forM [1 .. 100000] $ \(_i :: Int) -> do
             launch $ incrementCounter counter
-          traverse_ waitTask tasks
+          traverse_ wait tasks
           value <- getCounter counter
           liftIO $ value @?= 100000,
         testCase "automatic wait" $ do
@@ -74,13 +74,13 @@ main =
           value <- assertConIOKillThread $ runConIO $ do
             t1 <- launch waitForever
             cancel t1
-            waitTask t1
+            wait t1
           pure (),
         testCase "wait canceled task 2" $ do
           value <- assertConIOKillThread $ runConIO $ do
             t1 <- launch waitForever
             cancelAll
-            waitTask t1
+            wait t1
           pure (),
         testCase "task error propagates to scope" $ do
           assertConIOException $ runConIO $ do
@@ -118,7 +118,7 @@ main =
           gate2 <- newGate
           t <- raceTwo (waitGate gate1 >> pure 1) (waitGate gate2 >> pure 2)
           openGate gate2
-          value <- waitTask t
+          value <- wait t
           liftIO $ value @?= 2,
         testCase "race many actions" $ runConIO $ do
           condition <- newVariable (-1)
@@ -127,7 +127,7 @@ main =
               [0 .. 10000] <&> \(i :: Int) -> do
                 waitVariable (== i) condition >> pure i
           writeVariable condition 5000
-          value <- waitTask task
+          value <- wait task
           liftIO $ value @?= 5000,
         testCase "race 2 tasks" $ runConIO $ do
           gate1 <- newGate
@@ -136,7 +136,7 @@ main =
           t2 <- launch $ waitGate gate2 >> pure 2
           t3 <- raceTwoTasks t1 t2
           openGate gate2
-          value <- waitTask t3
+          value <- wait t3
           liftIO $ value @?= 2,
         testCase "race with finished task" $ runConIO $ do
           gate1 <- newGate
@@ -144,9 +144,9 @@ main =
           t1 <- launch $ waitGate gate1 >> pure 1
           t2 <- launch $ waitGate gate2 >> pure 2
           openGate gate2
-          _ <- waitTask t2
+          _ <- wait t2
           t3 <- raceTwoTasks t1 t2
-          value <- waitTask t3
+          value <- wait t3
           liftIO $ value @?= 2,
         testCase "race many tasks" $ runConIO $ do
           condition <- newVariable (-1)
@@ -154,12 +154,12 @@ main =
             launch $ waitVariable (== i) condition >> pure i
           task <- raceManyTasks tasks
           writeVariable condition 5000
-          value <- waitTask task
+          value <- wait task
           liftIO $ value @?= 5000,
         testCase "timeout task" $ runConIO $ do
           task :: Task () <- launch waitForever
-          timedTask <- timeoutTask (Milliseconds 10) task
-          value <- waitTask timedTask
+          timedTask <- timeoutTask (fromMilliseconds 10) task
+          value <- wait timedTask
           liftIO $ value @?= Nothing
       ]
 

@@ -30,7 +30,12 @@ common common
 
 library
     import:           common
-    exposed-modules:  ConIO
+    exposed-modules:
+        ConIO
+        ConIO.Core
+        ConIO.Race
+        ConIO.Communication
+        ConIO.MonadSTM
     hs-source-dirs:   src
 
 test-suite conio-test
