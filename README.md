@@ -2,7 +2,7 @@
 
 Haskell has great tools for dealing with concurrency. However, in praxis they are difficult to use.
 
-This library aims to make concurrency easy. It implements [structured concurrency](https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful), which means that threads do not outlive their parent scope. Additionally, exceptions are propagated automatically. This means that you do not have to worry about:
+This library aims to make concurrency easy. It implements [structured concurrency](https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful), not letting threads outlive their parent scope. Additionally, exceptions are propagated automatically. This means that you do not have to worry about:
 
 - Zombie processes, since a thread can never outlive its parent scope.
 - Dead processes, since exceptions will propagate to the parent thread.

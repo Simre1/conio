@@ -1,17 +1,20 @@
 cabal-version:      3.0
 name:               conio
-version:            0.1.0.0
--- synopsis:
--- description:
+version:            0.0.0.1
+synopsis:           A structured concurrency library
+description:        `conio` aims to simplify concurrency in Haskell, providing an easy way to spawn threads with sane defaults. It uses structured concurrency to control the lifetime of threads. 
 license:            BSD-3-Clause
 license-file:       LICENSE
-author:             simon
+author:             Simon Reitinger
 maintainer:         simre4775@gmail.com
--- copyright:
+copyright:          Simon Reitinger
 category:           Concurrency
 build-type:         Simple
-extra-doc-files:    CHANGELOG.md
--- extra-source-files:
+extra-source-files: README.md
+
+source-repository head
+  type:     git
+  location: https://github.com/Simre1/conio
 
 common common
     ghc-options: -Wall
@@ -23,10 +26,9 @@ common common
         OverloadedRecordDot
     build-depends:
         base ^>=4.20.0.0,
-        containers,
-        transformers,
-        stm,
-        unliftio-core
+        containers >= 0.7 && < 0.8,
+        stm >= 2.5.3 && < 2.6,
+        transformers >= 0.6.1 && < 0.7
 
 library
     import:           common
