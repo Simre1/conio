@@ -63,6 +63,7 @@
 module ConIO
   ( module Core,
     module Race,
+    module Workers,
     module MonadSTM,
     module Communication,
   )
@@ -72,3 +73,4 @@ import ConIO.Communication as Communication
 import ConIO.Core as Core
 import ConIO.MonadSTM as MonadSTM
 import ConIO.Race as Race
+import ConIO.Workers as Workers

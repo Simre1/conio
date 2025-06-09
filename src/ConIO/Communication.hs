@@ -20,6 +20,17 @@ module ConIO.Communication
     writeVariable,
     getVariable,
 
+    -- ** Slot
+    Slot (..),
+    newSlot,
+    newEmptySlot,
+    takeSlot,
+    tryTakeSlot,
+    readSlot,
+    tryReadSlot,
+    putSlot,
+    tryPutSlot,
+
     -- ** Counter
     Counter (..),
     newCounter,
@@ -27,6 +38,17 @@ module ConIO.Communication
     setCounter,
     incrementCounter,
     decrementCounter,
+
+    -- ** Sink
+    Sink,
+    newSink,
+    writeSink,
+
+    -- ** Source
+    Source,
+    newSource,
+    readSource,
+    tryReadSource,
 
     -- ** Queue
     Queue (..),
@@ -37,12 +59,14 @@ module ConIO.Communication
     tryPeekQueue,
     pushQueue,
     isEmptyQueue,
+    toSourceAndSink,
   )
 where
 
 import ConIO.MonadSTM
 import Control.Concurrent.STM
 import Control.Monad (void)
+import Data.Functor.Contravariant
 
 -- | A 'Gate' is initially closed and can be opened with 'openGate'.
 newtype Gate = Gate (TMVar ())
@@ -134,6 +158,46 @@ incrementCounter (Counter tVar) = liftSTM $ modifyTVar' tVar succ
 decrementCounter :: (MonadSTM m) => Counter -> m ()
 decrementCounter (Counter tVar) = liftSTM $ modifyTVar' tVar pred
 
+-- | A 'Slot' is either empty or contains an `a`.
+newtype Slot a = Slot (TMVar a)
+
+-- | Creates a new 'Slot' filled with `a`.
+newSlot :: (MonadSTM m) => a -> m (Slot a)
+newSlot a = Slot <$> liftSTM_IO (newTMVar a) (newTMVarIO a)
+
+-- | Creates a new empty 'Slot'.
+newEmptySlot :: (MonadSTM m) => m (Slot a)
+newEmptySlot = Slot <$> liftSTM_IO newEmptyTMVar newEmptyTMVarIO
+
+-- | Takes the element from the 'Slot'. Waits if there is no element.
+-- Afterwards, the 'Slot' is empty.
+takeSlot :: (MonadSTM m) => Slot a -> m a
+takeSlot (Slot var) = liftSTM (takeTMVar var)
+
+-- | Tries to take the element from the 'Slot'. Does not wait for the 'Slot' to be filled.
+-- Afterwards, the 'Slot' is empty.
+tryTakeSlot :: (MonadSTM m) => Slot a -> m (Maybe a)
+tryTakeSlot (Slot var) = liftSTM (tryTakeTMVar var)
+
+-- | Reads the element from the 'Slot'. Waits if there is no element.
+-- Afterwards, the 'Slot' is __not__ empty.
+readSlot :: (MonadSTM m) => Slot a -> m a
+readSlot (Slot var) = liftSTM (readTMVar var)
+
+-- | Tries to read the element from the 'Slot'. Does not wait for the 'Slot' to be filled.
+-- Afterwards, the 'Slot' is __not__ empty.
+tryReadSlot :: (MonadSTM m) => Slot a -> m (Maybe a)
+tryReadSlot (Slot var) = liftSTM (tryReadTMVar var)
+
+-- | Puts an element into the slot if there is space. Waits until the 'Slot' is empty to fill it.
+putSlot :: (MonadSTM m) => Slot a -> a -> m ()
+putSlot (Slot var) a = liftSTM (putTMVar var a)
+
+-- | Tries to put an element into the 'Slot' if there is space.
+-- Returns whether the putting was successful.
+tryPutSlot :: (MonadSTM m) => Slot a -> a -> m Bool
+tryPutSlot (Slot var) a = liftSTM (tryPutTMVar var a)
+
 -- | A 'Queue' holds zero or more values.
 newtype Queue a = Queue (TChan a)
 
@@ -167,3 +231,30 @@ pushQueue (Queue chan) a = liftSTM $ writeTChan chan a
 -- | Checks if the 'Queue' is empty.
 isEmptyQueue :: (MonadSTM m) => Queue a -> m Bool
 isEmptyQueue (Queue chan) = liftSTM $ isEmptyTChan chan
+
+toSourceAndSink :: Queue a -> (Source a, Sink a)
+toSourceAndSink queue = (newSource $ popQueue queue, newSink $ pushQueue queue)
+
+-- | A 'Sink' represents a channel where you can only push data
+newtype Sink a = Sink (a -> STM ())
+
+instance Contravariant Sink where
+  contramap f (Sink s) = Sink (s . f)
+
+-- | A 'Source' represents a channel where you can only read data
+newtype Source a = Source (STM a) deriving (Functor, Applicative)
+
+newSource :: STM a -> Source a
+newSource = Source
+
+readSource :: (MonadSTM m) => Source a -> m a
+readSource (Source stm) = liftSTM stm
+
+tryReadSource :: (MonadSTM m) => Source a -> m (Maybe a)
+tryReadSource (Source stm) = liftSTM $ orElse (Just <$> stm) (pure Nothing)
+
+newSink :: (a -> STM ()) -> Sink a
+newSink = Sink
+
+writeSink :: (MonadSTM m) => Sink a -> a -> m ()
+writeSink (Sink f) a = liftSTM $ f a

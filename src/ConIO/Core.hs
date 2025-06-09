@@ -1,14 +1,15 @@
+{-# LANGUAGE TypeFamilies #-}
+
 module ConIO.Core
   ( -- ** Concurrent IO
     ConIO,
     runConIO,
-    concurrently,
+    runConIOCancel,
 
     -- ** Tasks
-    Task (..),
+    Task,
     launch,
-    wait,
-    cancel,
+    AsyncThread (..),
     cancelAll,
 
     -- ** Manage scopes
@@ -22,6 +23,9 @@ module ConIO.Core
     -- ** Exceptions
     ConIOException (..),
     ConIOKillThread (..),
+
+    -- ** Internal
+    Task (..),
   )
 where
 
@@ -33,7 +37,7 @@ import Control.Monad (void)
 import Control.Monad.Fix
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Reader
-import Data.Foldable (forM_, traverse_)
+import Data.Foldable (traverse_)
 import Data.IORef
 import Data.Map qualified as M
 import Data.Maybe (fromMaybe)
@@ -42,17 +46,18 @@ import Data.Set qualified as S
 -- | The 'ConIO' environment keeps track of child processes and whether its enabled.
 data ConEnv = ConEnv
   { enabled :: MVar Bool,
-    children :: IORef (M.Map ThreadId (IO ()))
+    children :: IORef (M.Map ThreadId (IO ())),
+    threadId :: ThreadId
   }
 
 -- | Create an enabled environment with no children
 makeConEnv :: IO ConEnv
-makeConEnv = ConEnv <$> newMVar True <*> newIORef M.empty
+makeConEnv = ConEnv <$> newMVar True <*> newIORef M.empty <*> myThreadId
 
 -- | 'ConIO' stands for concurrent IO. 'ConIO' works like normal 'IO',
 --  but you can also fork off threads without worry.
--- Threads launched within  'ConIO' will __never outlive__ the 'ConIO' scope.
--- Before 'ConIO' ends, it will __wait for all threads to finish__.
+-- Tasks launched within  'ConIO' will __never outlive__ the 'ConIO' scope.
+-- Before 'ConIO' ends, it will __wait for all threads to finish or cancel them__.
 -- Additionally, exceptions between parent and children are propagated per default,
 -- completely shutting down all processes when an exception happens anywhere.
 --
@@ -65,7 +70,7 @@ newtype ConIO a = ConIO (ReaderT ConEnv IO a) deriving newtype (Functor, Applica
 getEnv :: ConIO (ConEnv)
 getEnv = ConIO ask
 
--- | Opens up a concurrent scope by running 'ConIO'. No threads launched within 'ConIO' outlive this scope.
+-- | Opens up a concurrent scope by running 'ConIO'. No threads launched within 'ConIO' outlive this scope, since it waits for them to finish.
 runConIO :: (MonadIO m) => ConIO a -> m a
 runConIO (ConIO r) = liftIO $ do
   env <- makeConEnv
@@ -77,16 +82,23 @@ runConIO (ConIO r) = liftIO $ do
     )
     (\(e :: SomeException) -> killConIO env >> throwIO e)
 
--- | Same as 'runConIO'
-concurrently :: (MonadIO m) => ConIO a -> m a
-concurrently = runConIO
+-- | Opens up a concurrent scope by running 'ConIO. Cancels all Tasks before returning.
+runConIOCancel :: (MonadIO m) => ConIO a -> m a
+runConIOCancel (ConIO r) = liftIO $ do
+  env <- makeConEnv
+  catch
+    ( do
+        a <- runReaderT r env
+        killConIO env
+        pure a
+    )
+    (\(e :: SomeException) -> killConIO env >> throwIO e)
 
 -- | 'launch' is the main way to spin up new threads.
 -- It will execute the given action in another thread and returns a 'Task'.
 launch :: IO a -> ConIO (Task a)
 launch action = do
   env <- getEnv
-  myId <- liftIO $ myThreadId
   maybeA <- liftIO $ withLock env $ do
     tvar <- newTVarIO StillRunning
     tId <- mask $ \restore -> forkIO $ do
@@ -95,11 +107,11 @@ launch action = do
         Right a -> atomically $ writeTVar tvar (Success a)
         Left err -> do
           case fromException @ConIOKillThread err of
-            Just _conIOKillThread -> do
+            Just _conIOKillTask -> do
               atomically $ writeTVar tvar (Failure (toException ConIOKillThread))
             Nothing -> do
               atomically $ writeTVar tvar (Failure (toException err))
-              throwTo myId (ConIOTaskException err)
+              throwTo env.threadId (ConIOTaskException err)
     let readValue = do
           value <- readTVar tvar
           case value of
@@ -118,48 +130,26 @@ launch action = do
         { payload = readValue,
           threadIds = S.singleton tId
         }
+
+  -- It's better to not throw an exception immediately.
+  -- If you throw the ConIODisabled exception immediately, you introduce non-deterministic exception-throwing
+  -- Depending on whether cancelAll or launch is executed first, it would throw an exception or not.
+  -- If you only throw when reading the payload, then this is similar behavior to launching, then cancelling, then reading.
   pure $ fromMaybe (Task {payload = throwSTM ConIODisabled, threadIds = S.empty}) maybeA
 
--- | A 'Task' represents a thread which is producing some `a`. You can 'wait' for tasks or 'cancel' them.
+-- | A 'Task' represents a thread which is producing some `a`. You can 'wait' for Tasks or 'cancel' them.
 --
--- The internals of 'Task' are exposed if you need them. However, this ought not to be necessary.
+-- 'fmap' on a 'Task' will run the function in the thread waiting for the result, not the task thread.
 data Task a = Task
   { payload :: STM a,
     threadIds :: S.Set ThreadId
   }
 
--- | Wait for a 'Task' and return its payload.
-wait :: (MonadSTM m) => Task a -> m a
-wait (Task payload _) = liftSTM payload
-
 instance Functor Task where
   fmap f task = task {payload = f <$> task.payload}
 
-instance Applicative Task where
-  pure a =
-    Task
-      { payload = pure a,
-        threadIds = S.empty
-      }
-  (Task payloadF threadIdsF) <*> (Task payloadA threadIdsA) =
-    Task
-      { payload = payloadF <*> payloadA,
-        threadIds = threadIdsF <> threadIdsA
-      }
-
-conIOkillThread :: ThreadId -> IO ()
-conIOkillThread tId = throwTo tId ConIOKillThread
-
--- | Cancel a 'Task', killing all threads which are part of producing the `a` value.
--- 'cancel' returns immediately and does not wait for the canceled threads to die.
---
--- If you want to wait for threads to die, you need to start them in a separate scope.
---
--- If you cancel a 'Task' which comprises other ones (e.g. by using '<*>'), it will cancel the contained tasks.
-cancel :: (MonadIO m) => Task a -> m ()
-cancel (Task _payload tIds) = liftIO $ do
-  liftIO $ traverse_ conIOkillThread tIds
-  pure ()
+conIOkillTask :: ThreadId -> IO ()
+conIOkillTask tId = throwTo tId ConIOKillThread
 
 -- | Aquire the 'enabled' lock and do something only if the 'ConEnv' is still enabled.
 withLock :: ConEnv -> IO a -> IO (Maybe a)
@@ -185,7 +175,7 @@ killConIO env = void $ try @SomeException $ do
       then do
         void $ try @ConIOException $ do
           children <- readIORef env.children
-          liftIO $ traverse_ conIOkillThread (M.keys children)
+          liftIO $ traverse_ conIOkillTask (M.keys children)
           liftIO $ sequence_ children
         pure False
       else pure False
@@ -246,3 +236,21 @@ instance Exception ConIOKillThread
 
 -- | The state of 'Task'.
 data Result a = StillRunning | Success a | Failure SomeException
+
+-- | A typeclass for all async workers which you can wait for.
+class AsyncThread t where
+  type Payload t
+
+  -- | Wait for an async worker and return its payload.
+  wait :: (MonadSTM m) => t -> m (Payload t)
+
+  -- | Cancel an async worder, killing all threads which are part of it.
+  -- 'cancel' returns immediately and does not wait for the canceled threads to die.
+  --
+  -- If you want to wait for threads to die, you need to start them in a separate scope.
+  cancel :: (MonadIO m) => t -> m ()
+
+instance AsyncThread (Task a) where
+  type Payload (Task a) = a
+  wait (Task payload _) = liftSTM payload
+  cancel (Task _ threadIds) = liftIO $ traverse_ conIOkillTask threadIds

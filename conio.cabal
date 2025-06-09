@@ -24,6 +24,9 @@ common common
         GeneralizedNewtypeDeriving
         DerivingStrategies
         OverloadedRecordDot
+        TypeFamilies
+        DuplicateRecordFields
+        NoFieldSelectors
     build-depends:
         base ^>=4.20.0.0,
         containers >= 0.7 && < 0.8,
@@ -38,6 +41,7 @@ library
         ConIO.Race
         ConIO.Communication
         ConIO.MonadSTM
+        ConIO.Workers
     hs-source-dirs:   src
 
 test-suite conio-test

@@ -3,9 +3,13 @@
 module ConIO.Race
   ( -- ** Race
     raceTwo,
+    raceTwoMaybe,
     raceMany,
+    raceManyMaybe,
     raceTwoTasks,
+    raceTwoTasksMaybe,
     raceManyTasks,
+    raceManyTasksMaybe,
 
     -- ** Timeout
     timeout,
@@ -50,7 +54,51 @@ raceTwo action1 action2 = mdo
         threadIds = task1.threadIds <> task2.threadIds
       }
 
--- | Race many actions. The slower ones are canceled.
+-- | Race two actions which may produce results. If one action produces a result, the other one is cancelled.
+-- If no actions produce a result, then the resulting task also produces nothing.
+raceTwoMaybe :: IO (Maybe a) -> IO (Maybe a) -> ConIO (Task (Maybe a))
+raceTwoMaybe action1 action2 = mdo
+  result <- liftIO (newTVarIO Nothing)
+  counter <- liftIO $ newTVarIO (2 :: Int)
+  task1 <- launch $ do
+    maybeValue1 <- action1
+    atomically $ modifyTVar' counter pred
+    case maybeValue1 of
+      Just value1 -> do
+        wasPut <- atomically $ do
+          currentResult <- readTVar result
+          case currentResult of
+            Nothing -> writeTVar result (Just value1) >> pure True
+            Just _ -> pure False
+        when wasPut $ cancel task2
+      Nothing -> pure ()
+  task2 <- launch $ do
+    maybeValue2 <- action2
+    atomically $ modifyTVar' counter pred
+    case maybeValue2 of
+      Just value2 -> do
+        wasPut <- atomically $ do
+          currentResult <- readTVar result
+          case currentResult of
+            Nothing -> writeTVar result (Just value2) >> pure True
+            Just _ -> pure False
+        when wasPut $ cancel task1
+      Nothing -> pure ()
+  pure $
+    Task
+      { payload = do
+          currentResult <- readTVar result
+          case currentResult of
+            Just r -> pure $ Just r
+            Nothing -> do
+              currentCounter <- readTVar counter
+              if currentCounter == 0
+                then pure Nothing
+                else retry,
+        threadIds = task1.threadIds <> task2.threadIds
+      }
+
+-- | Race many actions which may produce results. If one action produces a result, the other ones are cancelled.
 raceMany :: (Traversable t) => t (IO a) -> ConIO (Task a)
 raceMany actions = do
   raceResult <- liftIO newEmptyTMVarIO
@@ -68,6 +116,39 @@ raceMany actions = do
     Task
       { payload = readTMVar raceResult,
         threadIds = foldMap (.threadIds) tasks
+      }
+
+-- | Race many actions. The slower ones are canceled.
+-- If no actions produce a result, then the resulting task will also produce nothing.
+raceManyMaybe :: (Traversable t) => t (IO (Maybe a)) -> ConIO (Task (Maybe a))
+raceManyMaybe actions = do
+  raceResult <- liftIO newEmptyTMVarIO
+  counter <- liftIO (newTVarIO (length actions))
+  tasks <- withConScope $ \scope -> forM actions $ \action -> do
+    task <- useConScope scope $ launch $ do
+      maybeResult <- action
+      atomically $ modifyTVar' counter pred
+      case maybeResult of
+        Just result -> atomically $ tryPutTMVar raceResult (Just result)
+        Nothing -> pure False
+    pure task
+  cancellerTask <- launch $ do
+    shouldCancel <- atomically $ do
+      currentRaceResult <- tryReadTMVar raceResult
+      case currentRaceResult of
+        Just _ -> pure True
+        Nothing -> do
+          currentCounter <- readTVar counter
+          if currentCounter == 0
+            then do
+              putTMVar raceResult Nothing
+              pure False
+            else retry
+    when shouldCancel $ traverse_ cancel tasks
+  pure $
+    Task
+      { payload = readTMVar raceResult,
+        threadIds = foldMap (.threadIds) tasks <> cancellerTask.threadIds
       }
 
 -- | Time out an action.
@@ -102,6 +183,12 @@ raceTwoTasks task1 task2 = mdo
             <> foldMap (.threadIds) [checkTask1, checkTask2]
       }
 
+-- | Race already started 'Task's and use the first produced Just value. The slower task is cancelled.
+--
+-- Keep in mind that cancelling the resulting 'Task' will cancel both given 'Task's.
+raceTwoTasksMaybe :: Task (Maybe a) -> Task (Maybe a) -> ConIO (Task (Maybe a))
+raceTwoTasksMaybe task1 task2 = raceManyTasksMaybe [task1, task2]
+
 -- | Race already started 'Task's. The slower ones are cancelled.
 --
 -- Keep in mind that cancelling the resulting 'Task' will all given 'Task's.
@@ -125,6 +212,42 @@ raceManyTasks tasks = do
           task.threadIds
             <> foldMap (.threadIds) tasks
             <> foldMap (.threadIds) checkTasks
+      }
+
+-- | Race already started 'Task's and use the first produced Just value. The slower tasks are cancelled.
+--
+-- Keep in mind that cancelling the resulting 'Task' will all given 'Task's.
+raceManyTasksMaybe :: (Traversable t) => t (Task (Maybe a)) -> ConIO (Task (Maybe a))
+raceManyTasksMaybe tasks = do
+  raceResult <- liftIO newEmptyTMVarIO
+  counter <- liftIO (newTVarIO (length tasks))
+  checkTasks <- withConScope $ \scope -> forM tasks $ \task -> do
+    task <- useConScope scope $ launch $ do
+      maybeResult <- wait task
+      atomically $ modifyTVar' counter pred
+      case maybeResult of
+        Just result -> atomically $ tryPutTMVar raceResult (Just result)
+        Nothing -> pure False
+    pure task
+  cancellerTask <- launch $ do
+    shouldCancel <- atomically $ do
+      currentRaceResult <- tryReadTMVar raceResult
+      case currentRaceResult of
+        Just _ -> pure True
+        Nothing -> do
+          currentCounter <- readTVar counter
+          if currentCounter == 0
+            then do
+              putTMVar raceResult Nothing
+              pure False
+            else retry
+    when shouldCancel $ do
+      traverse_ cancel tasks
+      traverse_ cancel checkTasks
+  pure $
+    Task
+      { payload = readTMVar raceResult,
+        threadIds = foldMap (.threadIds) tasks <> foldMap (.threadIds) checkTasks <> cancellerTask.threadIds
       }
 
 -- | Time out a 'Task', counting the 'Duration' down from the moment that 'timeoutTask' is executed.

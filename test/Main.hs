@@ -156,6 +156,30 @@ main =
           writeVariable condition 5000
           value <- wait task
           liftIO $ value @?= 5000,
+        testCase "raceMaybe 2 tasks 1" $ runConIO $ do
+          result <- raceTwoMaybe (pure Nothing) (threadDelay 100 >> pure (Just ()))
+          value <- wait result
+          liftIO $ value @?= Just (),
+        testCase "raceMaybe 2 tasks 2" $ runConIO $ do
+          task <- raceTwoMaybe (pure (Just ())) (threadDelay 100 >> pure Nothing)
+          value <- wait task
+          liftIO $ value @?= Just (),
+        testCase "raceMaybe 2 tasks 3" $ runConIO $ do
+          task :: Task (Maybe ()) <- raceTwoMaybe (pure Nothing) (threadDelay 100 >> pure Nothing)
+          value <- wait task
+          liftIO $ value @?= Nothing,
+        testCase "raceMaybe many tasks" $ runConIO $ do
+          task :: Task (Maybe ()) <- raceManyMaybe [pure Nothing, threadDelay 100 >> pure Nothing]
+          value <- wait task
+          liftIO $ value @?= Nothing,
+        testCase "raceMaybe many tasks" $ runConIO $ do
+          task <- raceManyMaybe [pure Nothing, threadDelay 100 >> pure (Just ())]
+          value <- wait task
+          liftIO $ value @?= Just (),
+        testCase "raceMaybe many tasks" $ runConIO $ do
+          task <- raceManyMaybe [pure (Just ()), threadDelay 10000 >> pure undefined]
+          value <- wait task
+          liftIO $ value @?= Just (),
         testCase "timeout task" $ runConIO $ do
           task :: Task () <- launch waitForever
           timedTask <- timeoutTask (fromMilliseconds 10) task
